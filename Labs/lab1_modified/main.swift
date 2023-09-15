@@ -2,11 +2,32 @@ import Foundation
 
 // Алгоритм Штрассена
 
-enum Quarter {
-    case first
-    case second
-    case third
-    case fourth
+func asyncMultiplyMatrix(matrixA: [Int], matrixB: [Int], size: Int) -> [Int] {
+    var result: [Int] = Array(repeating: 0, count: matrixSize * matrixSize)
+    let group = DispatchGroup()
+
+    for indexStr in 0..<size {
+        
+        group.enter()
+        
+        DispatchQueue.global().async {
+            for indexCol in 0..<size {
+                
+                var sum = 0
+                for index in 0..<size {
+                    sum += matrixA[indexStr * size + index] * matrixB[index * size + indexCol]
+                }
+                
+                result[indexStr * size + indexCol] = sum
+            }
+            
+            group.leave()
+        }
+    }
+    
+    group.wait()
+    
+    return result
 }
 
 func serialMultiplyMatrix(matrixA: [Int], matrixB: [Int], size: Int) -> [Int] {
@@ -29,19 +50,12 @@ func serialMultiplyMatrix(matrixA: [Int], matrixB: [Int], size: Int) -> [Int] {
 }
 
 func strassenMultiplyMatrix(matrixA: [Int], matrixB: [Int], size: Int) -> [Int] {
-    if size == 1 {
-        return [matrixA[0] * matrixB[0]]
+    if size <= 128 {
+        return asyncMultiplyMatrix(matrixA: matrixA, matrixB: matrixB, size: size)
     }
 
-    let a11 = splitMatrix(matrix: matrixA, size: size, quarter: .first)
-    let a12 = splitMatrix(matrix: matrixA, size: size, quarter: .second)
-    let a21 = splitMatrix(matrix: matrixA, size: size, quarter: .third)
-    let a22 = splitMatrix(matrix: matrixA, size: size, quarter: .fourth)
-    
-    let b11 = splitMatrix(matrix: matrixB, size: size, quarter: .first)
-    let b12 = splitMatrix(matrix: matrixB, size: size, quarter: .second)
-    let b21 = splitMatrix(matrix: matrixB, size: size, quarter: .third)
-    let b22 = splitMatrix(matrix: matrixB, size: size, quarter: .fourth)
+    let (a11, a12, a21, a22) = splitMatrix(matrix: matrixA, size: size)
+    let (b11, b12, b21, b22) = splitMatrix(matrix: matrixB, size: size)
     
     let p1 = strassenMultiplyMatrix(
         matrixA: additionOfMatrix(matrix1: a11, matrix2: a22),
@@ -93,24 +107,17 @@ func strassenMultiplyMatrix(matrixA: [Int], matrixB: [Int], size: Int) -> [Int] 
     return concatMatrix(matrix11: c11, matrix12: c12, matrix21: c21, matrix22: c22, size: size / 2)
 }
 
-func concatMatrix(matrix11: [Int], matrix12: [Int], matrix21: [Int], matrix22: [Int], size: Int) async -> [Int] {
+func concatMatrix(matrix11: [Int], matrix12: [Int], matrix21: [Int], matrix22: [Int], size: Int) -> [Int] {
     let matrixSize = size * 2
     var matrix = Array(repeating: 0, count: size * size * 4)
-    await withTaskGroup(of: Void.self, body: { group in
-        group.addTask {
-            (0..<size).forEach { index in
-                matrix[index * matrixSize..<(index * matrixSize + size)] = matrix11[index * size..<size * (index + 1)]
-            }
+    
+    DispatchQueue.concurrentPerform(iterations: size) { strNum in
+        DispatchQueue.concurrentPerform(iterations: size) { colNum in
+            matrix[strNum * matrixSize + colNum] = matrix11[strNum * size + colNum]
+            matrix[strNum * matrixSize + colNum + size] = matrix12[strNum * size + colNum]
+            matrix[(strNum + size) * matrixSize + colNum] = matrix21[strNum * size + colNum]
+            matrix[(strNum + size) * matrixSize + (colNum + size)] = matrix22[strNum * size + colNum]
         }
-    })
-    (0..<size).forEach { index in
-        matrix[(index * matrixSize + size)..<matrixSize * (index + 1)] = matrix12[index * size..<size * (index + 1)]
-    }
-    (0..<size).forEach { index in
-        matrix[matrixSize * (index + size)..<(matrixSize * (index + size) + size)] = matrix21[index * size..<size * (index + 1)]
-    }
-    (0..<size).forEach { index in
-        matrix[(matrixSize * (index + size) + size)..<matrixSize * (index + size + 1)] = matrix22[index * size..<size * (index + 1)]
     }
     
     return matrix
@@ -149,26 +156,24 @@ func getNewDimension(last: Int) -> Int {
     return size << 1
 }
 
-func splitMatrix(matrix: [Int], size: Int, quarter: Quarter) -> [Int] {
+func splitMatrix(matrix: [Int], size: Int) -> ([Int], [Int], [Int], [Int]) {
     let half = size / 2
-    switch quarter {
-    case .first:
-        return (0..<half).flatMap { index in
-            Array(matrix[index * size..<(index * size + half)])
-        }
-    case .second:
-        return (0..<half).flatMap { index in
-            Array(matrix[(index * size + half)..<size * (index + 1)])
-        }
-    case .third:
-        return (half..<size).flatMap { index in
-            Array(matrix[index * size..<(index * size + half)])
-        }
-    case .fourth:
-        return (half..<size).flatMap { index in
-            Array(matrix[(index * size + half)..<size * (index + 1)])
+    var splitted = (
+        m11: Array(repeating: 0, count: half * half),
+        m12: Array(repeating: 0, count: half * half),
+        m21: Array(repeating: 0, count: half * half),
+        m22: Array(repeating: 0, count: half * half)
+    )
+    DispatchQueue.concurrentPerform(iterations: half) { strNum in
+        DispatchQueue.concurrentPerform(iterations: half) { colNum in
+            splitted.m11[strNum * half + colNum] = matrix[strNum * size + colNum]
+            splitted.m12[strNum * half + colNum] = matrix[strNum * size + colNum + half]
+            splitted.m21[strNum * half + colNum] = matrix[(strNum + half) * size + colNum]
+            splitted.m22[strNum * half + colNum] = matrix[(strNum + half) * size + (colNum + half)]
         }
     }
+    
+    return splitted
 }
 
 func print(matrix: [Int], size: Int) {
@@ -188,7 +193,7 @@ func measure(process: (() -> Void)) {
 }
 
 
-let matrixSize: Int = 1000
+let matrixSize: Int = 400
 
 var matrixA: [Int] = (1...matrixSize * matrixSize).map { _ in
     Int.random(in: 1...100)
@@ -198,13 +203,13 @@ var matrixB: [Int] = (1...matrixSize * matrixSize).map { _ in
     Int.random(in: 1...100)
 }
 
-var resultSerial: [Int] = []
+var resultAsync: [Int] = []
 var resultStrassen: [Int] = []
 
 print(getNewDimension(last: matrixSize))
 
 measure {
-    resultSerial = serialMultiplyMatrix(matrixA: matrixA, matrixB: matrixB, size: matrixSize)
+    resultAsync = asyncMultiplyMatrix(matrixA: matrixA, matrixB: matrixB, size: matrixSize)
 }
 measure {
     resultStrassen = strassenMultiplyMatrix(
@@ -215,6 +220,6 @@ measure {
 }
 
 
-print(resultSerial == resultStrassen.filter({ $0 != 0 }))
+print(resultAsync == resultStrassen.filter({ $0 != 0 }))
 
 

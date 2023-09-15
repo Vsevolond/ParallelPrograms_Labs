@@ -27,28 +27,39 @@ func serialMultiplyMatrix(matrixA: [Int], matrixB: [Int]) -> [Int] {
 
 func asyncMultiplyMatrix(matrixA: [Int], matrixB: [Int]) -> [Int] {
     var result: [Int] = Array(repeating: 0, count: matrixSize * matrixSize)
-    let group = DispatchGroup()
-
-    for indexStr in 0..<matrixSize {
-        
-        group.enter()
-        
-        DispatchQueue.global().async {
-            for indexCol in 0..<matrixSize {
-                
-                var sum = 0
-                for index in 0..<matrixSize {
-                    sum += matrixA[indexStr * matrixSize + index] * matrixB[index * matrixSize + indexCol]
-                }
-                
-                result[indexStr * matrixSize + indexCol] = sum
+//    let group = DispatchGroup()
+//
+//    for indexStr in 0..<matrixSize {
+//
+//        group.enter()
+//
+//        DispatchQueue.global().async {
+//            for indexCol in 0..<matrixSize {
+//
+//                var sum = 0
+//                for index in 0..<matrixSize {
+//                    sum += matrixA[indexStr * matrixSize + index] * matrixB[index * matrixSize + indexCol]
+//                }
+//
+//                result[indexStr * matrixSize + indexCol] = sum
+//            }
+//
+//            group.leave()
+//        }
+//    }
+//
+//    group.wait()
+    
+    DispatchQueue.concurrentPerform(iterations: matrixSize) { indexStr in
+        DispatchQueue.concurrentPerform(iterations: matrixSize) { indexCol in
+            var sum = 0
+            for index in 0..<matrixSize {
+                sum += matrixA[indexStr * matrixSize + index] * matrixB[index * matrixSize + indexCol]
             }
             
-            group.leave()
+            result[indexStr * matrixSize + indexCol] = sum
         }
     }
-    
-    group.wait()
     
     return result
 }
