@@ -23,22 +23,43 @@ func serialMultiplyMatrix(matrixA: [Int], matrixB: [Int]) -> [Int] {
 
 // MARK: - ASYNC
 
-func asyncMultiplyMatrix(matrixA: [Int], matrixB: [Int]) -> [Int] {
+func asyncFastestMultiplyMatrix(matrixA: [Int], matrixB: [Int]) -> [Int] {
     var result: [Int] = Array(repeating: 0, count: matrixSize * matrixSize)
-    
     DispatchQueue.concurrentPerform(iterations: matrixSize) { indexStr in
-        
+
         DispatchQueue.concurrentPerform(iterations: matrixSize) { indexCol in
-            
+
             var sum = 0
             DispatchQueue.concurrentPerform(iterations: matrixSize) { index in
                 sum += matrixA[indexStr * matrixSize + index] * matrixB[index * matrixSize + indexCol]
             }
-            
+
             result[indexStr * matrixSize + indexCol] = sum
         }
     }
-    
+    return result
+}
+
+func asyncMultiplyMatrix(matrixA: [Int], matrixB: [Int]) -> [Int] {
+    var result: [Int] = Array(repeating: 0, count: matrixSize * matrixSize)
+    let queue = OperationQueue()
+    queue.maxConcurrentOperationCount = 100
+
+    for indexStr in 0..<matrixSize {
+        queue.addOperation {
+            for indexCol in 0..<matrixSize {
+                queue.addOperation {
+                    var sum = 0
+                    for index in 0..<matrixSize {
+                        sum += matrixA[indexStr * matrixSize + index] * matrixB[index * matrixSize + indexCol]
+                    }
+                    result[indexStr * matrixSize + indexCol] = sum
+                }
+            }
+        }
+    }
+    queue.waitUntilAllOperationsAreFinished()
+
     return result
 }
 
