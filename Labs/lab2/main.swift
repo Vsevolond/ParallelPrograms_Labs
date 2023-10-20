@@ -24,6 +24,38 @@ func iterationSLAUSolution(matrixA: [[Double]], vectorB: [Double], size: Int) ->
     return vectorX
 }
 
+func asyncIterationSLAUSolution(matrixA: [[Double]], vectorB: [Double], size: Int, split count: Int) -> [Double] {
+    let operationQueue = OperationQueue()
+    operationQueue.maxConcurrentOperationCount = size / count + size % count == 0 ? 0 : 1
+    var vectorX: [Double] = Array(repeating: 0, count: size)
+    var tau: Double = 0.1 / Double(size)
+    let eps: Double = 0.00001
+    var flag = false
+
+    while !flag {
+        let checkValue = checkValueOf(matrixA: matrixA, vectorB: vectorB, vectorX: vectorX)
+        if checkValue < eps {
+            flag = true
+        } else {
+            for i in stride(from: 0, to: size, by: count) {
+                operationQueue.addOperation {
+                    var localTau = tau
+                    let subMatrixA = Array(matrixA[i..<i+count])
+                    let coefOfNewVectorX = nextVectorOf(vector: vectorX, matrixA: subMatrixA, vectorB: vectorB, tau: localTau)
+                    vectorX[i..<i+count] = ArraySlice(coefOfNewVectorX)
+                }
+            }
+            
+            operationQueue.waitUntilAllOperationsAreFinished()
+            let currentCheckValue = checkValueOf(matrixA: matrixA, vectorB: vectorB, vectorX: vectorX)
+            if currentCheckValue > checkValue {
+                tau = -tau
+            }
+        }
+    }
+    return vectorX
+}
+
 func nextVectorOf(vector: [Double], matrixA: [[Double]], vectorB: [Double], tau: Double) -> [Double] {
     return substractionOf(
         vector1: vector,
@@ -96,9 +128,16 @@ func print(matrix: [[Double]], size: Int) {
     }
 }
 
+func measure(process: (() -> Void)) {
+    let startTime = CFAbsoluteTimeGetCurrent()
+    process()
+    let endTime = CFAbsoluteTimeGetCurrent()
+    print(endTime - startTime)
+}
+
 // MARK: - MAIN
 
-let count: Int = 16
+let count: Int = 512
 let matrixA: [[Double]] = (0..<count).map { index1 in
     return (0..<count).map { index2 in
         index1 == index2 ? 2.0 : 1.0
@@ -107,4 +146,13 @@ let matrixA: [[Double]] = (0..<count).map { index1 in
 
 let vectorB: [Double] = Array(repeating: Double(count + 1), count: count)
 
-print(iterationSLAUSolution(matrixA: matrixA, vectorB: vectorB, size: count))
+var resultSerial: [Double] = []
+var resultAsync: [Double] = []
+measure {
+    resultSerial = iterationSLAUSolution(matrixA: matrixA, vectorB: vectorB, size: count)
+}
+measure {
+    resultAsync = asyncIterationSLAUSolution(matrixA: matrixA, vectorB: vectorB, size: count, split: 1)
+}
+
+print(resultSerial == resultAsync)
