@@ -1,7 +1,6 @@
 #include <iostream>
 #include "mpi.h"
 #include <vector>
-#include <tuple>
 #include <chrono>
 
 using namespace std;
@@ -249,10 +248,10 @@ void iterationSLAUSolution(Matrix matrixA, Vector vectorX, Vector vectorB, int p
                 delete [] arr;
             }
             
-            vectorX = newVectorX;
-            
             double lastValue = vectorX.valueBy(matrixA, vectorB);
             double newValue = newVectorX.valueBy(matrixA, vectorB);
+
+            vectorX = newVectorX;
             
             finish = (newValue < eps);
             
