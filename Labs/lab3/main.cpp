@@ -1,17 +1,13 @@
 #include <iostream>
-#include "mpi.h"
+#include <omp.h>
 #include <vector>
 #include <chrono>
 
-using namespace std;
-
 #define N 2048
+#define NUM_THREADS 16
 #define eps 0.00001
-#define FINISH_TAG 1
-#define VECTOR_TAG 2
-#define TAU_TAG 3
 
-double tau = 0.1 / N;
+using namespace std;
 
 class Matrix;
 
@@ -28,6 +24,10 @@ public:
     Vector nextBy(Matrix matrixA, Vector vectorX, Vector vectorB, double tau);
     double valueBy(Matrix matrixA, Vector vectorB);
     
+    Vector() {
+        size = 0;
+    }
+
     Vector(int n) {
         size = n;
         data = vector<double>(n);
@@ -154,6 +154,11 @@ private:
 public:
     int rows, columns;
     
+    Matrix() {
+        rows = 0;
+        columns = 0;
+    }
+    
     Matrix(int n, int m) {
         rows = n;
         columns = m;
@@ -226,90 +231,65 @@ double Vector::valueBy(Matrix matrixA, Vector vectorB) {
     return first / second;
 }
 
-void iterationSLAUSolution(Matrix matrixA, Vector vectorX, Vector vectorB, int process, int tasks) {
-    Matrix splitedMatrixA = matrixA.splitFor(process, tasks);
-    Vector splitedVectorB = vectorB.splitFor(process, tasks);
-    Vector splitedVectorX = vectorX.splitFor(process, tasks);
-    
+void iterationSLAUSolution(Matrix matrixA, Vector vectorX, Vector vectorB, int tasks) {
     bool finish = false;
+    double tau = 0.1 / N;
+    
+    Matrix arrayMatrixA[tasks];
+    for (int i = 0; i < tasks; i++) {
+        arrayMatrixA[i] = matrixA.splitFor(i, tasks);
+    }
+
+    Vector arrayVectorB[tasks];
+    for (int i = 0; i < tasks; i++) {
+        arrayVectorB[i] = vectorB.splitFor(i, tasks);
+    }
+    
+    Vector arrayVectorX[tasks];
+    for (int i = 0; i < tasks; i++) {
+        arrayVectorX[i] = vectorX.splitFor(i, tasks);
+    }
+    
     while (!finish) {
-        Vector newVectorX = splitedVectorX.nextBy(splitedMatrixA, vectorX, vectorB, tau);
-        splitedVectorX = newVectorX;
-        MPI_Barrier(MPI_COMM_WORLD);
+        #pragma omp parallel
+        {
+            int process = omp_get_thread_num();
+            Vector splitedVectorX = arrayVectorX[process];
+            Matrix splitedMatrixA = arrayMatrixA[process];
+            Vector splitedVectorB = arrayVectorB[process];
+            Vector subVectorX = splitedVectorX.nextBy(splitedMatrixA, vectorX, splitedVectorB, tau);
+
+            #pragma omp critical
+            {
+                arrayVectorX[process] = subVectorX;
+            }
+        }
         
-        if (process == 0) {
-            
-            for (int i = 1; i < tasks; i++) {
-                int size = splitedVectorX.size;
-                MPI_Status status;
-                double *arr = new double[size];
-                MPI_Recv(arr, size, MPI_DOUBLE, i, VECTOR_TAG, MPI_COMM_WORLD, &status);
-                newVectorX += Vector(arr, size);
-                delete [] arr;
-            }
-            
-            double lastValue = vectorX.valueBy(matrixA, vectorB);
-            double newValue = newVectorX.valueBy(matrixA, vectorB);
+        Vector newVectorX = arrayVectorX[0];
+        for (int i = 1; i < tasks; i++) {
+            newVectorX += arrayVectorX[i];
+        }
+        
+        double lastValue = vectorX.valueBy(matrixA, vectorB);
+        double newValue = newVectorX.valueBy(matrixA, vectorB);
+        
+        vectorX = newVectorX;
+        
+        if (newValue < eps) {
+            finish = true;
+//            newVectorX.print();
 
-            vectorX = newVectorX;
-            
-            finish = (newValue < eps);
-            
-            for (int i = 1; i < tasks; i++) {
-                MPI_Send(&finish, 1, MPI_CXX_BOOL, i, FINISH_TAG, MPI_COMM_WORLD);
-            }
-            
-            if (finish) {
-//                newVectorX.print();
-            } else {
-                if (newValue > lastValue) {
-                    tau = -tau;
-                }
-
-                double *arr = vectorX.toArray();
-                int size = vectorX.size;
-                for (int i = 1; i < tasks; i++) {
-                    MPI_Send(arr, size, MPI_DOUBLE, i, VECTOR_TAG, MPI_COMM_WORLD);
-                    MPI_Send(&tau, 1, MPI_DOUBLE, i, TAU_TAG, MPI_COMM_WORLD);
-                }
-                delete [] arr;
-            }
-            
-            
-        } else {
-            
-            double *arr = newVectorX.toArray();
-            MPI_Send(arr, newVectorX.size, MPI_DOUBLE, 0, VECTOR_TAG, MPI_COMM_WORLD);
-            delete [] arr;
-            
-            MPI_Status status;
-            MPI_Recv(&finish, 1, MPI_CXX_BOOL, 0, FINISH_TAG, MPI_COMM_WORLD, &status);
-            
-            if (!finish) {
-                int size = vectorX.size;
-                status = MPI_Status();
-                double *arr = new double[size];
-                MPI_Recv(arr, size, MPI_DOUBLE, 0, VECTOR_TAG, MPI_COMM_WORLD, &status);
-                vectorX = Vector(arr, size);
-                delete [] arr;
-                
-                status = MPI_Status();
-                MPI_Recv(&tau, 1, MPI_DOUBLE, 0, TAU_TAG, MPI_COMM_WORLD, &status);
-            }
+        } else if (newValue > lastValue) {
+            tau = -tau;
         }
     }
 }
 
-
 // MARK: - MAIN
 
-int main(int argc, char * argv[]) {
-    int process, tasks;
-
-    MPI_Init(&argc, &argv);
-
-    MPI_Comm_size(MPI_COMM_WORLD, &tasks);
-    MPI_Comm_rank(MPI_COMM_WORLD, &process);
+int main(int argc, const char * argv[]) {
+    int tasks = NUM_THREADS;
+    omp_set_num_threads(tasks);
     
     Matrix matrixA(N, N);
     matrixA.fill();
@@ -321,16 +301,14 @@ int main(int argc, char * argv[]) {
     
     chrono::time_point<chrono::system_clock> start = chrono::system_clock::now();
     
-    iterationSLAUSolution(matrixA, vectorX, vectorB, process, tasks);
+    iterationSLAUSolution(matrixA, vectorX, vectorB, tasks);
     
     chrono::time_point<chrono::system_clock> end = chrono::system_clock::now();
     
     chrono::duration<double> seconds = end - start;
     double time = static_cast<double>(seconds.count());
     
-    if (process == 0) {
-        cout << time << endl;
-    }
+    cout << time << endl;
 
-    MPI_Finalize();
+    return 0;
 }
