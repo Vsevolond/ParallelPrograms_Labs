@@ -1,9 +1,43 @@
 import Foundation
 
+extension Array {
+    func roundedIndex(of index: Int) -> Int {
+        let position: Int
+        if index < 0 {
+            position = count + index % count
+        } else if index >= count {
+            position = index % count
+        } else {
+            position = index
+        }
+        
+        return position
+    }
+    
+    subscript(safe index: Int) -> Element {
+        get {
+            let position = roundedIndex(of: index)
+            return self[position]
+        }
+        set(newValue) {
+            let position = roundedIndex(of: index)
+            self[position] = newValue
+        }
+    }
+}
+
 extension TimeInterval {
 
-    static var randomTime: TimeInterval {
+    static var eatingTime: TimeInterval {
         Double(Int.random(in: 1...10)) / 10
+    }
+    
+    static var thinkingTime: TimeInterval {
+        Double(Int.random(in: 1...10)) / 10
+    }
+    
+    static var takingForkTime: TimeInterval {
+        Double(Int.random(in: 1...5)) / 10
     }
 }
 
@@ -17,8 +51,8 @@ extension CFAbsoluteTime {
 enum PhilosopherState {
 
     case thinking(startTime: CFAbsoluteTime, duration: TimeInterval)
-    case takeLeftFork
-    case takeRightFork
+    case takingLeftFork(startTime: CFAbsoluteTime, duration: TimeInterval)
+    case takingRightFork(startTime: CFAbsoluteTime, duration: TimeInterval)
     case eating(startTime: CFAbsoluteTime, duration: TimeInterval)
     case putForks
     case none
@@ -26,31 +60,38 @@ enum PhilosopherState {
 
 class Philosopher {
     
-    private let ID: Int
+    let ID: Int
     
     private var currentState: PhilosopherState = .none
     private var activityThread: Thread? = nil
-    private var lock = NSLock()
-
-    var leftNeighbor: Philosopher? = nil
-    var rightNeighbor: Philosopher? = nil
+    private var isActivated = false
     
-    var hasLeftFork: Bool = true
-    var hasRightFork: Bool = true
+    private let delegate: ForkDelegate
     
-    init(ID: Int) {
+    var tookLeftFork: Bool = false
+    var tookRightFork: Bool = false
+    
+    init(ID: Int, delegate: ForkDelegate) {
         self.ID = ID
+        self.delegate = delegate
     }
     
     func startActivity() {
+        isActivated = true
         activityThread = Thread { [weak self] in
-            self?.activity()
-            RunLoop.current.run()
+            guard let self else {
+                return
+            }
+            
+            while isActivated {
+                activity()
+            }
         }
         activityThread?.start()
     }
     
     func endActivity() {
+        isActivated = false
         activityThread?.cancel()
         currentState = .none
     }
@@ -58,17 +99,17 @@ class Philosopher {
     func printState() {
         switch currentState {
         case .thinking(_, _):
-            print("Philosopher \(ID): thinking")
-        case .takeLeftFork:
-            print("Philosopher \(ID): took left fork")
-        case .takeRightFork:
-            print("Philosopher \(ID): took right fork")
+            print("Philosopher \(ID): thinking 🤔")
+        case .takingLeftFork(_, _):
+            print("Philosopher \(ID): taking left fork ✋")
+        case .takingRightFork(_, _):
+            print("Philosopher \(ID): taking right fork 🤚")
         case .eating(_, _):
-            print("Philosopher \(ID): eating")
+            print("Philosopher \(ID): eating 🍲")
         case .putForks:
-            print("Philosopher \(ID): put forks")
+            print("Philosopher \(ID): put forks 🙌")
         case .none:
-            print("Philosopher \(ID): do nothing")
+            print("Philosopher \(ID): do nothing 😑")
         }
     }
     
@@ -80,51 +121,40 @@ class Philosopher {
         switch currentState {
 
         case .thinking(let startTime, let duration):
-            if .currentTime - startTime >= duration, hasLeftFork, hasRightFork {
-                lock.withLock {
-                    if Bool.random() {
-                        currentState = .takeLeftFork
-                        leftNeighbor?.hasRightFork = false
-                    } else {
-                        currentState = .takeRightFork
-                        rightNeighbor?.hasLeftFork = false
-                    }
+            if .currentTime - startTime >= duration {
+                if Bool.random(), delegate.getLeftFork(for: ID) {
+                    currentState = .takingLeftFork(startTime: .currentTime, duration: .takingForkTime)
+                } else if delegate.getRightFork(for: ID) {
+                    currentState = .takingRightFork(startTime: .currentTime, duration: .takingForkTime)
+                } else {
+                    currentState = .thinking(startTime: .currentTime, duration: .thinkingTime)
                 }
-
-            } else {
-                currentState = .thinking(startTime: .currentTime, duration: .randomTime)
             }
             
-        case .takeLeftFork:
-            if hasRightFork {
-                if let rightNeighbor, !rightNeighbor.hasLeftFork {
-                    currentState = .eating(startTime: .currentTime, duration: .randomTime)
+        case .takingLeftFork(let startTime, let duration):
+            if .currentTime - startTime >= duration {
+                tookLeftFork = true
+                
+                if tookRightFork {
+                    currentState = .eating(startTime: .currentTime, duration: .eatingTime)
+                } else if delegate.getRightFork(for: ID) {
+                    currentState = .takingRightFork(startTime: .currentTime, duration: .takingForkTime)
                 } else {
-                    lock.withLock {
-                        currentState = .takeRightFork
-                        rightNeighbor?.hasLeftFork = false
-                    }
+                    currentState = .putForks
                 }
-
-            } else {
-                leftNeighbor?.hasRightFork = true
-                currentState = .thinking(startTime: .currentTime, duration: .randomTime)
             }
 
-        case .takeRightFork:
-            if hasLeftFork {
-                if let leftNeighbor, !leftNeighbor.hasRightFork {
-                    currentState = .eating(startTime: .currentTime, duration: .randomTime)
+        case .takingRightFork(let startTime, let duration):
+            if .currentTime - startTime >= duration {
+                tookRightFork = true
+                
+                if tookLeftFork {
+                    currentState = .eating(startTime: .currentTime, duration: .eatingTime)
+                } else if delegate.getLeftFork(for: ID) {
+                    currentState = .takingLeftFork(startTime: .currentTime, duration: .takingForkTime)
                 } else {
-                    lock.withLock {
-                        currentState = .takeLeftFork
-                        leftNeighbor?.hasRightFork = false
-                    }
+                    currentState = .putForks
                 }
-
-            } else {
-                rightNeighbor?.hasLeftFork = true
-                currentState = .thinking(startTime: .currentTime, duration: .randomTime)
             }
 
         case .eating(let startTime, let duration):
@@ -133,70 +163,104 @@ class Philosopher {
             }
 
         case .putForks:
-            lock.withLock {
-                leftNeighbor?.hasRightFork = true
-                rightNeighbor?.hasLeftFork = true
-            }
-            currentState = .thinking(startTime: .currentTime, duration: .randomTime)
+            tookLeftFork = false
+            tookRightFork = false
+            delegate.putForks(for: ID)
+            currentState = .thinking(startTime: .currentTime, duration: .thinkingTime)
 
         case .none:
-            if hasLeftFork, hasRightFork, hasAppetit() {
-                lock.withLock {
-                    if Bool.random() {
-                        currentState = .takeLeftFork
-                        leftNeighbor?.hasRightFork = false
-                    } else {
-                        currentState = .takeRightFork
-                        rightNeighbor?.hasLeftFork = false
-                    }
+            if hasAppetit() {
+                if Bool.random(), delegate.getLeftFork(for: ID) {
+                    currentState = .takingLeftFork(startTime: .currentTime, duration: .takingForkTime)
+                } else if delegate.getRightFork(for: ID) {
+                    currentState = .takingRightFork(startTime: .currentTime, duration: .takingForkTime)
+                } else {
+                    currentState = .thinking(startTime: .currentTime, duration: .thinkingTime)
                 }
 
             } else {
-                currentState = .thinking(startTime: .currentTime, duration: .randomTime)
+                currentState = .thinking(startTime: .currentTime, duration: .thinkingTime)
             }
         }
     }
 }
 
-func makePhilosophers(count: Int) -> [Philosopher] {
-    var philosophers = [Philosopher]()
-    
-    for i in 1...count {
-        philosophers.append(.init(ID: i))
-    }
-    
-    for i in 1..<count - 1 {
-        philosophers[i].leftNeighbor = philosophers[i - 1]
-        philosophers[i].rightNeighbor = philosophers[i + 1]
-    }
-    
-    philosophers[0].leftNeighbor = philosophers[count - 1]
-    philosophers[count - 1].rightNeighbor = philosophers[0]
-    
-    return philosophers
+protocol ForkDelegate {
+    func getLeftFork(for philosopherID: Int) -> Bool
+    func getRightFork(for philosopherID: Int) -> Bool
+    func putForks(for philosopherID: Int)
 }
 
-let philosophers = makePhilosophers(count: 5)
-
-let start = CFAbsoluteTime.currentTime
-
-var isStarted = false
-
-for philosopher in philosophers {
-    philosopher.startActivity()
+class Table {
+    
+    let places: Int
+    var isForkExist: [Bool]
+    var philosophers: [Philosopher] = []
+    private var lock = NSLock()
+    
+    init(places: Int) {
+        self.places = places
+        self.isForkExist = Array(repeating: true, count: places)
+    }
+    
+    private func addPhilosophers() {
+        for i in 0..<places {
+            philosophers.append(.init(ID: i, delegate: self))
+        }
+    }
+    
+    func start() {
+        addPhilosophers()
+        philosophers.forEach { philosopher in
+            philosopher.startActivity()
+        }
+    }
+    
+    func printState() {
+        philosophers.forEach { philosopher in
+            philosopher.printState()
+        }
+        print()
+    }
+    
+    func end() {
+        philosophers.forEach { philosopher in
+            philosopher.endActivity()
+        }
+    }
 }
+
+extension Table: ForkDelegate {
+    func getLeftFork(for philosopherID: Int) -> Bool {
+        lock.withLock {
+            let exist = isForkExist[safe: philosopherID - 1]
+            isForkExist[safe: philosopherID - 1] = false
+            return exist
+        }
+    }
+    
+    func getRightFork(for philosopherID: Int) -> Bool {
+        lock.withLock {
+            let exist = isForkExist[safe: philosopherID]
+            isForkExist[safe: philosopherID] = false
+            return exist
+        }
+    }
+    
+    func putForks(for philosopherID: Int) {
+        lock.withLock {
+            isForkExist[safe: philosopherID - 1] = true
+            isForkExist[safe: philosopherID] = true
+        }
+    }
+}
+
+let table = Table(places: 5)
+table.start()
 
 let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-    philosophers.forEach { philosopher in
-        philosopher.printState()
-    }
-    print()
+    table.printState()
 }
 timer.fire()
 
 RunLoop.main.run()
-
-philosophers.forEach { philosopher in
-    philosopher.endActivity()
-}
-timer.invalidate()
