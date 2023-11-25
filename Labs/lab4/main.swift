@@ -1,7 +1,19 @@
 import Foundation
 
-extension Array {
-    func roundedIndex(of index: Int) -> Int {
+let notificationQueue = OperationQueue()
+notificationQueue.maxConcurrentOperationCount = 100
+
+final class ThreadSafeArray<T> {
+
+    private var array: [T] = []
+    private let queue = DispatchQueue(label: "ru.ThreadSafeArray", attributes: .concurrent)
+
+    init(array: [T]) {
+        self.array = array
+    }
+    
+    private func roundedIndex(of index: Int) -> Int {
+        let count = array.count
         let position: Int
         if index < 0 {
             position = count + index % count
@@ -13,16 +25,35 @@ extension Array {
         
         return position
     }
-    
-    subscript(safe index: Int) -> Element {
+
+    subscript(index: Int) -> T {
         get {
-            let position = roundedIndex(of: index)
-            return self[position]
+            queue.sync {
+                let position = roundedIndex(of: index)
+                return array[position]
+            }
         }
         set(newValue) {
-            let position = roundedIndex(of: index)
-            self[position] = newValue
+            queue.async(flags: .barrier) {
+                let position = self.roundedIndex(of: index)
+                self[position] = newValue
+            }
         }
+    }
+}
+
+extension Notification.Name {
+    
+    static var startActivity: Notification.Name {
+        .init("startActivity")
+    }
+    
+    static var stopActivity: Notification.Name {
+        .init("stopActivity")
+    }
+    
+    static var endActivity: Notification.Name {
+        .init("endActivity")
     }
 }
 
@@ -74,9 +105,18 @@ class Philosopher {
     init(ID: Int, delegate: ForkDelegate) {
         self.ID = ID
         self.delegate = delegate
+        NotificationCenter.default.addObserver(forName: .startActivity, object: nil, queue: notificationQueue) { [weak self] _ in
+            self?.startActivity()
+        }
+        NotificationCenter.default.addObserver(forName: .stopActivity, object: nil, queue: notificationQueue) { [weak self] _ in
+            self?.stopActivity()
+        }
+        NotificationCenter.default.addObserver(forName: .endActivity, object: nil, queue: notificationQueue) { [weak self] _ in
+            self?.endActivity()
+        }
     }
     
-    func startActivity() {
+    private func startActivity() {
         isActivated = true
         activityThread = Thread { [weak self] in
             guard let self else {
@@ -90,9 +130,15 @@ class Philosopher {
         activityThread?.start()
     }
     
-    func endActivity() {
+    private func stopActivity() {
         isActivated = false
         activityThread?.cancel()
+    }
+    
+    private func endActivity() {
+        isActivated = false
+        activityThread?.cancel()
+        activityThread = nil
         currentState = .none
     }
     
@@ -194,13 +240,12 @@ protocol ForkDelegate {
 class Table {
     
     let places: Int
-    var isForkExist: [Bool]
+    var isForkExist: ThreadSafeArray<Bool>
     var philosophers: [Philosopher] = []
-    private var lock = NSLock()
     
     init(places: Int) {
         self.places = places
-        self.isForkExist = Array(repeating: true, count: places)
+        self.isForkExist = ThreadSafeArray<Bool>(array: .init(repeating: true, count: places))
     }
     
     private func addPhilosophers() {
@@ -211,54 +256,46 @@ class Table {
     
     func start() {
         addPhilosophers()
-        philosophers.forEach { philosopher in
-            philosopher.startActivity()
-        }
+        NotificationCenter.default.post(name: .startActivity, object: nil)
     }
     
     func printState() {
+        NotificationCenter.default.post(name: .stopActivity, object: nil)
         philosophers.forEach { philosopher in
             philosopher.printState()
         }
         print()
+        NotificationCenter.default.post(name: .startActivity, object: nil)
     }
     
     func end() {
-        philosophers.forEach { philosopher in
-            philosopher.endActivity()
-        }
+        NotificationCenter.default.post(name: .endActivity, object: nil)
     }
 }
 
 extension Table: ForkDelegate {
     func getLeftFork(for philosopherID: Int) -> Bool {
-        lock.withLock {
-            let exist = isForkExist[safe: philosopherID - 1]
-            isForkExist[safe: philosopherID - 1] = false
-            return exist
-        }
+        let exist = isForkExist[philosopherID - 1]
+        isForkExist[philosopherID - 1] = false
+        return exist
     }
     
     func getRightFork(for philosopherID: Int) -> Bool {
-        lock.withLock {
-            let exist = isForkExist[safe: philosopherID]
-            isForkExist[safe: philosopherID] = false
-            return exist
-        }
+        let exist = isForkExist[philosopherID]
+        isForkExist[philosopherID] = false
+        return exist
     }
     
     func putForks(for philosopherID: Int) {
-        lock.withLock {
-            isForkExist[safe: philosopherID - 1] = true
-            isForkExist[safe: philosopherID] = true
-        }
+        isForkExist[philosopherID - 1] = true
+        isForkExist[philosopherID] = true
     }
 }
 
 let table = Table(places: 5)
 table.start()
 
-let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+let timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
     table.printState()
 }
 timer.fire()
