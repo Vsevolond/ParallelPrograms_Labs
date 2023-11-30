@@ -1,74 +1,19 @@
 import Foundation
 
-let notificationQueue = OperationQueue()
-notificationQueue.maxConcurrentOperationCount = 100
-
-final class ThreadSafeArray<T> {
-
-    private var array: [T] = []
-    private let queue = DispatchQueue(label: "ru.ThreadSafeArray", attributes: .concurrent)
-
-    init(array: [T]) {
-        self.array = array
-    }
-    
-    private func roundedIndex(of index: Int) -> Int {
-        let count = array.count
-        let position: Int
-        if index < 0 {
-            position = count + index % count
-        } else if index >= count {
-            position = index % count
-        } else {
-            position = index
-        }
-        
-        return position
-    }
-
-    subscript(index: Int) -> T {
-        get {
-            queue.sync {
-                let position = roundedIndex(of: index)
-                return array[position]
-            }
-        }
-        set(newValue) {
-            queue.async(flags: .barrier) {
-                let position = self.roundedIndex(of: index)
-                self[position] = newValue
-            }
-        }
-    }
-}
-
-extension Notification.Name {
-    
-    static var startActivity: Notification.Name {
-        .init("startActivity")
-    }
-    
-    static var stopActivity: Notification.Name {
-        .init("stopActivity")
-    }
-    
-    static var endActivity: Notification.Name {
-        .init("endActivity")
-    }
-}
+// MARK: - Extensions
 
 extension TimeInterval {
 
     static var eatingTime: TimeInterval {
-        Double(Int.random(in: 1...10)) / 10
+        Double(Int.random(in: 10...15)) / 10
     }
     
     static var thinkingTime: TimeInterval {
-        Double(Int.random(in: 1...10)) / 10
+        Double(Int.random(in: 10...15)) / 10
     }
     
     static var takingForkTime: TimeInterval {
-        Double(Int.random(in: 1...5)) / 10
+        Double(Int.random(in: 5...10)) / 10
     }
 }
 
@@ -77,6 +22,15 @@ extension CFAbsoluteTime {
     static var currentTime: CFAbsoluteTime {
         CFAbsoluteTimeGetCurrent()
     }
+}
+
+// MARK: - Philosopher
+
+protocol ForkDelegate {
+
+    func getLeftFork(for philosopherID: Int) -> Bool
+    func getRightFork(for philosopherID: Int) -> Bool
+    func putForks(for philosopherID: Int)
 }
 
 enum PhilosopherState {
@@ -90,55 +44,42 @@ enum PhilosopherState {
 }
 
 class Philosopher {
-    
-    let ID: Int
-    
+
+    // MARK: - Private Properties
+
+    private let ID: Int
     private var currentState: PhilosopherState = .none
-    private var activityThread: Thread? = nil
     private var isActivated = false
     
     private let delegate: ForkDelegate
     
-    var tookLeftFork: Bool = false
-    var tookRightFork: Bool = false
+    private var tookLeftFork: Bool = false
+    private var tookRightFork: Bool = false
+    
+    // MARK: - Initializers
     
     init(ID: Int, delegate: ForkDelegate) {
         self.ID = ID
         self.delegate = delegate
-        NotificationCenter.default.addObserver(forName: .startActivity, object: nil, queue: notificationQueue) { [weak self] _ in
-            self?.startActivity()
-        }
-        NotificationCenter.default.addObserver(forName: .stopActivity, object: nil, queue: notificationQueue) { [weak self] _ in
-            self?.stopActivity()
-        }
-        NotificationCenter.default.addObserver(forName: .endActivity, object: nil, queue: notificationQueue) { [weak self] _ in
-            self?.endActivity()
-        }
     }
     
-    private func startActivity() {
+    // MARK: - Internal Methods
+
+    func startActivity(on queue: OperationQueue) {
         isActivated = true
-        activityThread = Thread { [weak self] in
+        queue.addOperation { [weak self] in
             guard let self else {
                 return
             }
             
-            while isActivated {
+            while isActivated, !queue.isSuspended {
                 activity()
             }
         }
-        activityThread?.start()
     }
     
-    private func stopActivity() {
+    func endActivity() {
         isActivated = false
-        activityThread?.cancel()
-    }
-    
-    private func endActivity() {
-        isActivated = false
-        activityThread?.cancel()
-        activityThread = nil
         currentState = .none
     }
     
@@ -159,6 +100,8 @@ class Philosopher {
         }
     }
     
+    // MARK: - Private Methods
+    
     private func hasAppetit() -> Bool {
         Bool.random()
     }
@@ -176,7 +119,7 @@ class Philosopher {
                     currentState = .thinking(startTime: .currentTime, duration: .thinkingTime)
                 }
             }
-            
+
         case .takingLeftFork(let startTime, let duration):
             if .currentTime - startTime >= duration {
                 tookLeftFork = true
@@ -209,9 +152,9 @@ class Philosopher {
             }
 
         case .putForks:
+            delegate.putForks(for: ID)
             tookLeftFork = false
             tookRightFork = false
-            delegate.putForks(for: ID)
             currentState = .thinking(startTime: .currentTime, duration: .thinkingTime)
 
         case .none:
@@ -231,73 +174,109 @@ class Philosopher {
     }
 }
 
-protocol ForkDelegate {
-    func getLeftFork(for philosopherID: Int) -> Bool
-    func getRightFork(for philosopherID: Int) -> Bool
-    func putForks(for philosopherID: Int)
-}
+// MARK: - Table
 
 class Table {
     
-    let places: Int
-    var isForkExist: ThreadSafeArray<Bool>
-    var philosophers: [Philosopher] = []
+    // MARK: - Private Properties
+
+    private let places: Int
+    private var forks: [Bool]
+    private var philosophers: [Philosopher] = []
     
+    private let philosophersQueue = OperationQueue()
+    private let lock = NSLock()
+    
+    // MARK: - Initializers
+
     init(places: Int) {
         self.places = places
-        self.isForkExist = ThreadSafeArray<Bool>(array: .init(repeating: true, count: places))
+        self.forks = .init(repeating: true, count: places)
+        self.philosophersQueue.maxConcurrentOperationCount = places
     }
     
-    private func addPhilosophers() {
-        for i in 0..<places {
-            philosophers.append(.init(ID: i, delegate: self))
+    // MARK: - Internal Methods
+
+    func printState() {
+        philosophersQueue.isSuspended = true
+        philosophersQueue.waitUntilAllOperationsAreFinished()
+        for philosopher in philosophers {
+            philosopher.printState()
+        }
+        print()
+        philosophersQueue.isSuspended = false
+        for philosopher in philosophers {
+            philosopher.startActivity(on: philosophersQueue)
         }
     }
     
     func start() {
         addPhilosophers()
-        NotificationCenter.default.post(name: .startActivity, object: nil)
-    }
-    
-    func printState() {
-        NotificationCenter.default.post(name: .stopActivity, object: nil)
-        philosophers.forEach { philosopher in
-            philosopher.printState()
+        for philosopher in philosophers {
+            philosopher.startActivity(on: philosophersQueue)
         }
-        print()
-        NotificationCenter.default.post(name: .startActivity, object: nil)
     }
     
     func end() {
-        NotificationCenter.default.post(name: .endActivity, object: nil)
+        for philosopher in philosophers {
+            philosopher.endActivity()
+        }
+    }
+    
+    // MARK: - Private Methods
+
+    private func addPhilosophers() {
+        for i in 0..<places {
+            philosophers.append(.init(ID: i, delegate: self))
+        }
     }
 }
 
 extension Table: ForkDelegate {
+
+    // MARK: - Protocol Methods
+
     func getLeftFork(for philosopherID: Int) -> Bool {
-        let exist = isForkExist[philosopherID - 1]
-        isForkExist[philosopherID - 1] = false
-        return exist
+        lock.lock()
+        let isExist = forks[philosopherID]
+        if isExist {
+            forks[philosopherID] = false
+        }
+        lock.unlock()
+
+        return isExist
     }
-    
+
     func getRightFork(for philosopherID: Int) -> Bool {
-        let exist = isForkExist[philosopherID]
-        isForkExist[philosopherID] = false
-        return exist
+        let position = (philosopherID + 1) % philosophers.count
+
+        lock.lock()
+        let isExist = forks[position]
+        if isExist {
+            forks[position] = false
+        }
+        lock.unlock()
+
+        return isExist
     }
-    
+
     func putForks(for philosopherID: Int) {
-        isForkExist[philosopherID - 1] = true
-        isForkExist[philosopherID] = true
+        let position = (philosopherID + 1) % philosophers.count
+
+        lock.withLock {
+            forks[philosopherID] = true
+            forks[position] = true
+        }
     }
 }
+
+// MARK: - MAIN
 
 let table = Table(places: 5)
 table.start()
 
-let timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+let timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in
     table.printState()
 }
-timer.fire()
 
 RunLoop.main.run()
