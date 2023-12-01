@@ -50,6 +50,17 @@ enum PhilosopherState {
     case eating(startTime: CFAbsoluteTime, duration: TimeInterval)
     case putForks(type: ForkType)
     case none
+    
+    func string(withEmoji: Bool) -> String {
+        switch self {
+        case .thinking(_, _): return "thinking \(withEmoji ? "🤔" : "")"
+        case .takingLeftFork(_, _): return "taking left fork \(withEmoji ? "✋" : "")"
+        case .takingRightFork(_, _): return "taking right fork \(withEmoji ? "🤚" : "")"
+        case .eating(_, _): return "eating \(withEmoji ? "🍲" : "")"
+        case .putForks(_): return "put forks \(withEmoji ? "🙌" : "")"
+        case .none: return "do nothing \(withEmoji ? "😑" : "")"
+        }
+    }
 }
 
 class Philosopher {
@@ -91,22 +102,13 @@ class Philosopher {
         isActivated = false
         currentState = .none
     }
+
+    func printState(withEmoji: Bool) {
+        print("Philosopher \(ID): \(currentState.string(withEmoji: withEmoji))")
+    }
     
-    func printState() {
-        switch currentState {
-        case .thinking(_, _):
-            print("Philosopher \(ID): thinking 🤔")
-        case .takingLeftFork(_, _):
-            print("Philosopher \(ID): taking left fork ✋")
-        case .takingRightFork(_, _):
-            print("Philosopher \(ID): taking right fork 🤚")
-        case .eating(_, _):
-            print("Philosopher \(ID): eating 🍲")
-        case .putForks(_):
-            print("Philosopher \(ID): put forks 🙌")
-        case .none:
-            print("Philosopher \(ID): do nothing 😑")
-        }
+    func getState(withEmoji: Bool) -> String {
+        return currentState.string(withEmoji: withEmoji)
     }
     
     // MARK: - Private Methods
@@ -219,13 +221,10 @@ class Table {
     
     // MARK: - Internal Methods
 
-    func printState() {
+    func printState(format: LogFormat) {
         philosophersQueue.isSuspended = true
         philosophersQueue.waitUntilAllOperationsAreFinished()
-        for philosopher in philosophers {
-            philosopher.printState()
-        }
-        print()
+        Logger.shared.log(philosophers: philosophers, format: format)
         philosophersQueue.isSuspended = false
         for philosopher in philosophers {
             philosopher.startActivity(on: philosophersQueue)
@@ -308,13 +307,45 @@ extension Table: ForkDelegate {
     }
 }
 
+// MARK: - Logger
+
+enum LogFormat {
+    
+    case list
+    case table
+}
+
+class Logger {
+    
+    static let shared = Logger()
+    
+    func log(philosophers: [Philosopher], format: LogFormat) {
+        switch format {
+        case .list:
+            for philosopher in philosophers {
+                philosopher.printState(withEmoji: true)
+            }
+            print()
+
+        case .table:
+            let states = philosophers.map { $0.getState(withEmoji: false) }
+            var result = ""
+            for state in states {
+                result += "| " + state + " "
+            }
+            print(result)
+            print()
+        }
+    }
+}
+
 // MARK: - MAIN
 
 let table = Table(places: 5)
 table.start()
 
 let timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in
-    table.printState()
+    table.printState(format: .list)
 }
 
 RunLoop.main.run()
